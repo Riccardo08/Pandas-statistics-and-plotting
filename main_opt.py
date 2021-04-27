@@ -20,7 +20,7 @@ df['month']= data.apply(lambda x: x.month)
 df['hour']=data.apply(lambda x: x.hour)
 df['dn']=data.apply(lambda x: x.weekday())
 df['data']=Date.date
-# Opzione_1: convertire l'anno in secondi
+
 
 def mean_plus_std(x):
     return x.mean()+x.std()
