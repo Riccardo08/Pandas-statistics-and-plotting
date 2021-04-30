@@ -1,18 +1,31 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
-import seaborn as sns
 from datetime import datetime as dt
 import os
 import numpy as np
 import matplotlib.gridspec as gridspec
-
+from pandas import DataFrame
+from pandas import concat
 import torch
-import torch.nn as nn
-import torchvision #provides acces to popular datasets, model architextures and image transformation for computer vision
-import torchvision.transforms as transforms # provides common transformation for image processing
+from torch import nn
+from numpy import vstack
+from pandas import read_csv
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+from torch.utils.data import random_split
+from torch import Tensor
+from torch.nn import Linear
+from torch.nn import ReLU
+from torch.nn import Sigmoid
+from torch.nn import Module
+from torch.optim import SGD
+from torch.nn import BCELoss
 import torch.nn.functional as F
 import torch.optim as optim
+
 
 df = pd.read_csv('ASHRAE90.1_OfficeSmall_STD2016_NewYork.csv')
 df=df.iloc[288:,:]
@@ -27,6 +40,7 @@ df['month']= data.apply(lambda x: x.month)
 df['hour']=data.apply(lambda x: x.hour)
 df['dn']=data.apply(lambda x: x.weekday())
 df['data']=Date.date
+# Opzione_1: convertire l'anno in secondi
 
 def mean_plus_std(x):
     return x.mean()+x.std()
@@ -40,7 +54,6 @@ def fill_dataset(df, value):
         new_df = df.groupby(df.dn)[df.columns[1:-5]].agg(['mean', 'std', 'max', 'min', 'median', mean_plus_std, mean_minus_std])
     elif value == 'month':
         new_df = df.groupby(df.month)[df.columns[1:-5]].agg(['mean', 'std', 'max', 'min', 'median', mean_plus_std, mean_minus_std])
-
     return new_df
 
 df_hourly = fill_dataset(df,'hour')
@@ -48,82 +61,111 @@ df_daily = fill_dataset(df,'day')
 df_monthly = fill_dataset(df,'month')
 
 
-def get_num_correct(preds, labels):
-    return preds.argmax(dim=1).eq(labels).sum().item()
-
-class Network(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=6, kernel_size=5) # 2 convolutional layers
-        self.conv2 = nn.Conv2d(in_channels=6, out_channels=12, kernel_size=5)
-
-        self.fc1 = nn.Linear(in_features=12*4*4, out_features=120) # 3 linear layers
-        self.fc2 = nn.Linear(in_features=120, out_features=60)
-        self.out = nn.Linear(in_features=60, out_features=10)
-
-    def forward(self, t):
-        # (1) input layer
-        t = t
-        # (2) hidden con layer
-        t = self.conv1(t)
-        t = F.relu(t)
-        t = F.max_pool2d(t, kernel_size=2, stride=2)
-        # (3) hidden conv layer
-        t = self.conv2(t)
-        t = F.relu(t)
-        t = F.max_pool2d(t, kernel_size=2, stride=2)
-        # (4) hidden linear layer
-        t = t.reshape(-1, 12 * 4 * 4)  # perchè il convolutional layer da in output solo un vettore
-        t = self.fc1(t)
-        t = F.relu(t)
-        # (5) hidden linear layer
-        t = self.fc2(t)
-        t = F.relu(t)
-
-        # (6) output layer
-        t = self.out(t)
-        # t = F.softmax(t, dim=1) # the SOFTMAX activation function returns the probability for each of the prediction calsses
-        return t
-
+def series_to_supervised(data, n_in=1, n_out=1, dropnan=True):
+    n_vars = 1 if type(data) is list else data.shape[1]
+	df = DataFrame(data)
+	cols, names = list(), list()
+	# input sequence (t-n, ... t-1) -> X
+	for i in range(n_in, 0, -1):
+		cols.append(df.shift(i))
+		names += [('temp%d(t-%d)' % (j+1, i)) for j in range(n_vars)]
+	# forecast sequence (t, t+1, ... t+n) -> Y
+	for i in range(0, n_out):
+		cols.append(df.shift(-i))
+		if i == 0:
+			names += [('temp%d(t)' % (j+1)) for j in range(n_vars)]
+		else:
+			names += [('temp%d(t+%d)' % (j+1, i)) for j in range(n_vars)]
+	# put it all together
+	agg = concat(cols, axis=1)
+	agg.columns = names
+	# drop rows with NaN values
+	if dropnan:
+		agg.dropna(inplace=True)
+        return agg
 
 """
-train_set = torchvision.datasets.FashionMNIST(
-    root='./data/FashionMNIST'
-    ,train=True
-    ,download=True
-    ,transform=transforms.Compose([
-        transforms.ToTensor()
-    ])
-)
-train_loader = torch.utils.data.DataLoader(train_set, batch_size=100, shuffle=True)
+def scale(df, cols):
+	for col in cols:
+		# df[col] = df[col].astype(float)
+		max = float(df[col].max())
+		df[col] = df[col].apply(lambda x: x/max)
+		return df
+
+columns = df.columns[1:-5]
+prova = scale(df, columns)
 """
+# TODO: Normalization with the function
+temp = df['CORE_ZN:Zone Mean Air Temperature [C](TimeStep)']
+max_temp = df['CORE_ZN:Zone Mean Air Temperature [C](TimeStep)'].max()
+temp = temp.apply(lambda x: x/max_temp)
+print(temp)
+data_temp = series_to_supervised(temp.to_list())
+# in input le 48 ore prima
+x_train = data_temp['temp1(t-1)'].iloc[-48:]
+y_train = data_temp['temp1(t)'].iloc[-1:]
+x_test = data_temp['temp1(t-1)'].iloc[-49:-1]
+y_test = data_temp['temp1(t)'].iloc[-2:-1]
 
-# definire train e test
 
-train_set = torch.utils.data.DataLoader(train, batch_size =100)
-test_set = torch.utils.data.DataLoader(test, batch_size =100)
+x_train = torch.tensor(np.array(x_train.values)).float()
+y_train = torch.tensor(np.array(y_train.values)).float()
+x_test = torch.tensor(np.array(x_test.values)).float()
+y_test = torch.tensor(np.array(y_test.values)).float()
 
 
-network = Network()
-train_loader = torch.utils.data.DataLoader(train_set, batch_size=100)
-optimizer = optim.Adam(network.parameters(), lr=0.01) # lr "learning rate"
+# Model definition
+class MLP(nn.Module):
+	# define model elements
+	def __init__(self):
+		super(MLP, self).__init__()
+		self.hidden1 = Linear(48, 10) # input to first hidden layer
+		self.act1 = ReLU()
+		self.hidden2 = Linear(10, 8) # second hidden layer
+		self.act2 = ReLU()
+		self.hidden3 = Linear(8, 1) # third hidden layer and output
+		self.act3 = ReLU()
 
-for epoch in range(5):
+	# forward propagate input
+	def forward(self, X):
+		# input to first hidden layer
+		X = self.hidden1(X)
+		X = self.act1(X)
+		# second hidden layer
+		X = self.hidden2(X)
+		X = self.act2(X)
+		# third hidden layer and output
+		X = self.hidden3(X)
+		X = self.act3(X)
+		return X
+
+
+train_dl = DataLoader(x_train, batch_size=12, shuffle=False)
+test_dl = DataLoader(x_test, batch_size=12, shuffle=False)
+
+mlp = MLP()
+optimizer = optim.Adam(mlp.parameters(), lr=0.01) # lr "learning rate"
+
+#training with multiple epochs
+for epoch in range(4):
     total_loss = 0
     total_correct = 0
-    for batch in train_loader: # get batch
-        images, labels = batch
-        preds = network(images) # pass batch
-        loss = F.cross_entropy(preds, labels) # calculate the loss
+    for batch in train_dl: # get batch
+        # images, labels = batch
+        preds = mlp(x_train) # pass batch
+        loss = F.cross_entropy(preds, y_train) # calculate the loss
 
         optimizer.zero_grad()
         loss.backward() #calculate the gradient
         optimizer.step() # update weight
 
         total_loss += loss.item()
-        total_correct += get_num_correct(preds, labels)
+        # total_correct += get_num_correct(preds, labels)
 
-    print("epoch: ", epoch, "total_correct: ", total_correct, "loss: ", total_loss)
+	print("epoch: ", epoch, "loss: ", total_loss)
+    # print("epoch: ", epoch, "total_correct: ", total_correct, "loss: ", total_loss)
 
-total_correct/len(train_set)
+# total_correct/len(train_set)
+
+
 
